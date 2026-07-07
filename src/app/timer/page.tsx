@@ -21,7 +21,7 @@ const BREATH_CUES: Record<string, string[]> = {
 
 function TimerContent() {
   const searchParams = useSearchParams();
-  const { speak, stop, isSupported } = useSpeech();
+  const { speak, speakBreath, stop, isSupported } = useSpeech();
 
   const [selectedRoutine, setSelectedRoutine] = useState<Routine | null>(null);
   const [timerState, setTimerState] = useState<TimerState>("idle");
@@ -59,7 +59,7 @@ function TimerContent() {
     if (!currentStep?.breathPhase || stepElapsed % 10 !== 0 || stepElapsed === 0) return;
     const cues = BREATH_CUES[currentStep.breathPhase] ?? [];
     const cue = cues[Math.floor(Math.random() * cues.length)];
-    if (cue) speak(cue, { rate: 0.75, pitch: 0.9 });
+    if (cue) speakBreath(cue);
   }, [stepElapsed, currentStep, timerState, voiceEnabled, isSupported, speak]);
 
   const tick = useCallback(() => {
@@ -79,7 +79,7 @@ function TimerContent() {
       clearInterval(intervalRef.current!);
       setTimerState("done");
       if (voiceEnabled && isSupported) {
-        setTimeout(() => speak("Pratica completata. Ottimo lavoro. Prenditi un momento per sentirti.", { rate: 0.80 }), 500);
+        setTimeout(() => speak("Pratica completata. Ottimo lavoro. Prenditi un momento, per sentirti.", { rate: 0.72 }), 500);
       }
       saveSession({ id: generateId(), date: format(new Date(), "yyyy-MM-dd"), routineId: selectedRoutine.id, routineType: selectedRoutine.type, duration: elapsed + 1, targetDuration: selectedRoutine.duration, completed: true, createdAt: new Date().toISOString() });
     }
@@ -90,19 +90,19 @@ function TimerContent() {
     setTimerState("running"); setElapsed(0); setStepElapsed(0); setCurrentStepIdx(0); setLastSpokenStep(-1);
     intervalRef.current = setInterval(tick, 1000);
     if (voiceEnabled && isSupported) {
-      setTimeout(() => speak(`Inizia ${selectedRoutine.name}. ${selectedRoutine.steps[0]?.name ?? ""}. ${selectedRoutine.steps[0]?.instruction ?? ""}`, { rate: 0.82 }), 800);
+      setTimeout(() => speak(`Benvenuto. Inizia ${selectedRoutine.name}. ${selectedRoutine.steps[0]?.name ?? ""}. ${selectedRoutine.steps[0]?.instruction ?? ""}`, { rate: 0.82 }), 800);
     }
   }
 
   function pause() {
     clearInterval(intervalRef.current!); setTimerState("paused"); stop();
-    if (voiceEnabled && isSupported) setTimeout(() => speak("In pausa.", { rate: 0.85 }), 200);
+    if (voiceEnabled && isSupported) setTimeout(() => speak("Prenditi una pausa.", { rate: 0.75 }), 200);
   }
 
   function resume() {
     setTimerState("running");
     intervalRef.current = setInterval(tick, 1000);
-    if (voiceEnabled && isSupported) setTimeout(() => speak("Riprendiamo.", { rate: 0.85 }), 300);
+    if (voiceEnabled && isSupported) setTimeout(() => speak("Riprendiamo, con calma.", { rate: 0.75 }), 300);
   }
 
   function stopTimer() {
