@@ -12,7 +12,6 @@ import { useSpeech } from "@/hooks/useSpeech";
 
 type TimerState = "idle" | "running" | "paused" | "done";
 
-// Cue di respiro per fase — semplici, calmi
 const BREATH_CUES: Record<string, string[]> = {
   inhale: ["Inspira...", "Respira dentro...", "Prendi aria..."],
   hold:   ["Trattieni...", "Rimani qui..."],
@@ -22,7 +21,7 @@ const BREATH_CUES: Record<string, string[]> = {
 
 function TimerContent() {
   const searchParams = useSearchParams();
-  const { speak, speakBreath, speakFull, stop, isSupported } = useSpeech();
+  const { speak, speakFull, speakBreath, stop, isSupported } = useSpeech();
 
   const [selectedRoutine, setSelectedRoutine] = useState<Routine | null>(null);
   const [timerState, setTimerState] = useState<TimerState>("idle");
@@ -30,8 +29,12 @@ function TimerContent() {
   const [currentStepIdx, setCurrentStepIdx] = useState(0);
   const [stepElapsed, setStepElapsed] = useState(0);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
-  const [lastSpokenStep, setLastSpokenStep] = useState(-1);
+
+  // Ref invece di state — evita race condition nell'effect della voce
+  const lastSpokenStepRef = useRef(-1);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerStateRef = useRef<TimerState>("idle");
+  timerStateRef.current = timerState;
 
   useEffect(() => {
     const param = searchParams.get("routine");
@@ -43,42 +46,42 @@ function TimerContent() {
   const progressPct = totalDuration > 0 ? Math.min(elapsed / totalDuration, 1) : 0;
   const stepProgress = currentStep ? Math.min(stepElapsed / currentStep.duration, 1) : 0;
 
-  // ── Leggi step completo quando cambia ──────────────────────────
+  // ── Leggi step quando cambia currentStepIdx ──────────────────────────────
   useEffect(() => {
-    if (!voiceEnabled || !isSupported || timerState !== "running" || !currentStep) return;
-    if (currentStepIdx === lastSpokenStep) return;
-    setLastSpokenStep(currentStepIdx);
+    if (!voiceEnabled || !isSupported) return;
+    if (timerStateRef.current !== "running") return;
+    if (!currentStep) return;
+    // Usa ref: nessuna race condition
+    if (currentStepIdx === lastSpokenStepRef.current) return;
+    lastSpokenStepRef.current = currentStepIdx;
 
-    // Pausa naturale poi legge TUTTO: nome + istruzione completa
     const t = setTimeout(() => {
-      const fullText = `${currentStep.name}. ${currentStep.instruction}`;
-      speakFull(fullText);
-    }, 800);
+      speakFull(`${currentStep.name}. ${currentStep.instruction}`);
+    }, 600);
     return () => clearTimeout(t);
-  }, [currentStepIdx, timerState, voiceEnabled, isSupported, currentStep, lastSpokenStep, speakFull]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStepIdx]); // dipende SOLO da currentStepIdx
 
-  // ── Cue di respiro ogni 10 secondi ─────────────────────────────
+  // ── Cue respiro ogni 10s ─────────────────────────────────────────────────
   useEffect(() => {
     if (!voiceEnabled || !isSupported || timerState !== "running") return;
     if (!currentStep?.breathPhase) return;
-    if (stepElapsed % 10 !== 0 || stepElapsed === 0) return;
-    // Non interrompere se sta già parlando (lascia finire istruzione iniziale)
-    if (stepElapsed < 12) return;
-
+    if (stepElapsed % 10 !== 0 || stepElapsed === 0 || stepElapsed < 15) return;
     const cues = BREATH_CUES[currentStep.breathPhase] ?? [];
     const cue = cues[Math.floor(Math.random() * cues.length)];
     if (cue) speakBreath(cue);
-  }, [stepElapsed, currentStep, timerState, voiceEnabled, isSupported, speakBreath]);
+  }, [stepElapsed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tick = useCallback(() => {
     setElapsed(e => e + 1);
     setStepElapsed(se => se + 1);
   }, []);
 
-  // ── Avanza step ─────────────────────────────────────────────────
+  // ── Avanza step ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!selectedRoutine || timerState !== "running" || !currentStep) return;
     if (stepElapsed < currentStep.duration) return;
+
     const nextIdx = currentStepIdx + 1;
     if (nextIdx < selectedRoutine.steps.length) {
       setCurrentStepIdx(nextIdx);
@@ -87,35 +90,27 @@ function TimerContent() {
       clearInterval(intervalRef.current!);
       setTimerState("done");
       if (voiceEnabled && isSupported) {
-        setTimeout(() => {
-          speakFull("Pratica completata. Ottimo lavoro. Prenditi un momento per sentirti, e ascoltare come stai.");
-        }, 600);
+        setTimeout(() => speakFull("Pratica completata. Ottimo lavoro. Prenditi un momento per sentirti."), 600);
       }
-      saveSession({
-        id: generateId(), date: format(new Date(), "yyyy-MM-dd"),
+      saveSession({ id: generateId(), date: format(new Date(), "yyyy-MM-dd"),
         routineId: selectedRoutine.id, routineType: selectedRoutine.type,
         duration: elapsed + 1, targetDuration: selectedRoutine.duration,
-        completed: true, createdAt: new Date().toISOString(),
-      });
+        completed: true, createdAt: new Date().toISOString() });
     }
-  }, [stepElapsed, currentStepIdx, selectedRoutine, timerState, elapsed, voiceEnabled, isSupported, speakFull, currentStep]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stepElapsed]);
 
   function start() {
     if (!selectedRoutine) return;
-    setTimerState("running"); setElapsed(0); setStepElapsed(0);
-    setCurrentStepIdx(0); setLastSpokenStep(-1);
+    lastSpokenStepRef.current = 0;
+    setTimerState("running"); setElapsed(0); setStepElapsed(0); setCurrentStepIdx(0);
     intervalRef.current = setInterval(tick, 1000);
 
     if (voiceEnabled && isSupported) {
-      // Prima legge il benvenuto, poi dopo 3s il primo step
-      setTimeout(() => {
-        speak(`Benvenuto. Inizia ${selectedRoutine.name}.`, { rate: 0.70 });
-      }, 500);
-      setTimeout(() => {
-        const first = selectedRoutine.steps[0];
-        if (first) speakFull(`${first.name}. ${first.instruction}`);
-      }, 3500);
-      setLastSpokenStep(0);
+      const first = selectedRoutine.steps[0];
+      // Benvenuto → pausa → primo step
+      setTimeout(() => speak(`Benvenuto. Inizia ${selectedRoutine.name}.`, { rate: 0.70 }), 400);
+      setTimeout(() => { if (first) speakFull(`${first.name}. ${first.instruction}`); }, 3200);
     }
   }
 
@@ -128,23 +123,34 @@ function TimerContent() {
     setTimerState("running");
     intervalRef.current = setInterval(tick, 1000);
     if (voiceEnabled && isSupported) {
-      setTimeout(() => speak("Riprendiamo, con calma.", { rate: 0.72 }), 400);
+      // Rileggi lo step corrente quando si riprende
+      setTimeout(() => {
+        if (!selectedRoutine) return;
+        const step = selectedRoutine.steps[currentStepIdx];
+        if (step) speakFull(`Riprendiamo. ${step.name}. ${step.instruction}`);
+      }, 400);
     }
   }
 
   function stopTimer() {
     clearInterval(intervalRef.current!); stop();
-    if (elapsed > 30) saveSession({
-      id: generateId(), date: format(new Date(), "yyyy-MM-dd"),
+    if (elapsed > 30) saveSession({ id: generateId(), date: format(new Date(), "yyyy-MM-dd"),
       routineId: selectedRoutine?.id ?? "", routineType: selectedRoutine?.type ?? "centratura",
       duration: elapsed, targetDuration: selectedRoutine?.duration ?? 0,
-      completed: false, createdAt: new Date().toISOString(),
-    });
-    setTimerState("idle"); setElapsed(0); setStepElapsed(0);
-    setCurrentStepIdx(0); setLastSpokenStep(-1);
+      completed: false, createdAt: new Date().toISOString() });
+    setTimerState("idle"); setElapsed(0); setStepElapsed(0); setCurrentStepIdx(0);
+    lastSpokenStepRef.current = -1;
   }
 
-  function toggleVoice() { setVoiceEnabled(v => !v); if (voiceEnabled) stop(); }
+  function toggleVoice() {
+    const next = !voiceEnabled;
+    setVoiceEnabled(next);
+    if (!next) stop();
+    else if (timerState === "running" && currentStep) {
+      // Riattivar la voce → rileggi step corrente
+      setTimeout(() => speakFull(`${currentStep.name}. ${currentStep.instruction}`), 300);
+    }
+  }
 
   useEffect(() => () => { clearInterval(intervalRef.current!); stop(); }, [stop]);
 
@@ -154,12 +160,11 @@ function TimerContent() {
 
   if (timerState === "done") return (
     <CompletionScreen routine={selectedRoutine!} duration={elapsed}
-      onReset={() => { setTimerState("idle"); setElapsed(0); setLastSpokenStep(-1); }} />
+      onReset={() => { setTimerState("idle"); setElapsed(0); lastSpokenStepRef.current = -1; }} />
   );
 
   return (
     <div className="page-container flex flex-col">
-      {/* Header */}
       <div className="flex items-center justify-between px-4 pt-6 pb-4">
         <Link href="/" className="w-8 h-8 flex items-center justify-center rounded-full bg-pratica-warm text-pratica-muted">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
@@ -182,20 +187,17 @@ function TimerContent() {
           isSupported={isSupported} onToggleVoice={toggleVoice} onStart={start} />
       )}
       {(timerState === "running" || timerState === "paused") && selectedRoutine && (
-        <ActiveTimer
-          routine={selectedRoutine} elapsed={elapsed} stepElapsed={stepElapsed}
-          currentStep={currentStep} CIRCUM={CIRCUM} dashOffset={dashOffset}
-          RADIUS={RADIUS} stepProgress={stepProgress} isRunning={timerState === "running"}
+        <ActiveTimer routine={selectedRoutine} elapsed={elapsed} stepElapsed={stepElapsed}
+          currentStep={currentStep} CIRCUM={CIRCUM} dashOffset={dashOffset} RADIUS={RADIUS}
+          stepProgress={stepProgress} isRunning={timerState === "running"}
           voiceEnabled={voiceEnabled} isSupported={isSupported}
-          onPause={pause} onResume={resume} onStop={stopTimer} onToggleVoice={toggleVoice}
-        />
+          onPause={pause} onResume={resume} onStop={stopTimer} onToggleVoice={toggleVoice} />
       )}
       {timerState === "idle" && <BottomNav />}
     </div>
   );
 }
 
-// ── Selector ──────────────────────────────────────────────────────────────────
 function RoutineSelector({ routines, onSelect }: { routines: Routine[]; onSelect: (r: Routine) => void }) {
   return (
     <div className="flex-1 overflow-y-auto no-scrollbar px-4 pb-24">
@@ -222,7 +224,6 @@ function RoutineSelector({ routines, onSelect }: { routines: Routine[]; onSelect
   );
 }
 
-// ── Preview ───────────────────────────────────────────────────────────────────
 function RoutinePreview({ routine, voiceEnabled, isSupported, onToggleVoice, onStart }:
   { routine: Routine; voiceEnabled: boolean; isSupported: boolean; onToggleVoice: () => void; onStart: () => void }) {
   return (
@@ -247,18 +248,12 @@ function RoutinePreview({ routine, voiceEnabled, isSupported, onToggleVoice, onS
           <div className="flex items-center gap-3">
             <span className="text-xl">{voiceEnabled ? "🔊" : "🔇"}</span>
             <div className="text-left">
-              <p className="text-sm font-medium text-pratica-text">
-                {voiceEnabled ? "Guida vocale attiva" : "Guida vocale disattiva"}
-              </p>
-              <p className="text-xs text-pratica-muted">
-                {voiceEnabled ? "Legge ogni istruzione per intero" : "Tocca per attivare"}
-              </p>
+              <p className="text-sm font-medium text-pratica-text">{voiceEnabled ? "Guida vocale attiva" : "Guida vocale disattiva"}</p>
+              <p className="text-xs text-pratica-muted">{voiceEnabled ? "Legge ogni istruzione per intero" : "Tocca per attivare"}</p>
             </div>
           </div>
-          <div className={cn("w-11 h-6 rounded-full transition-all flex items-center px-0.5",
-            voiceEnabled ? "bg-pratica-green" : "bg-pratica-border")}>
-            <div className={cn("w-5 h-5 rounded-full bg-white shadow transition-all",
-              voiceEnabled ? "translate-x-5" : "translate-x-0")} />
+          <div className={cn("w-11 h-6 rounded-full transition-all flex items-center px-0.5", voiceEnabled ? "bg-pratica-green" : "bg-pratica-border")}>
+            <div className={cn("w-5 h-5 rounded-full bg-white shadow transition-all", voiceEnabled ? "translate-x-5" : "translate-x-0")} />
           </div>
         </button>
       )}
@@ -292,15 +287,12 @@ function RoutinePreview({ routine, voiceEnabled, isSupported, onToggleVoice, onS
           style={{ background:`linear-gradient(135deg,${routine.color} 0%,${routine.color}cc 100%)` }}>
           {voiceEnabled && isSupported ? "🔊 Inizia con guida vocale" : "Inizia ora"}
         </button>
-        <Link href="/timer" className="block text-center text-sm text-pratica-muted py-2">
-          Scegli altra pratica
-        </Link>
+        <Link href="/timer" className="block text-center text-sm text-pratica-muted py-2">Scegli altra pratica</Link>
       </div>
     </div>
   );
 }
 
-// ── Active Timer ──────────────────────────────────────────────────────────────
 function ActiveTimer({ routine, elapsed, stepElapsed, currentStep, CIRCUM, dashOffset,
   RADIUS, stepProgress, isRunning, voiceEnabled, isSupported,
   onPause, onResume, onStop, onToggleVoice }:
@@ -308,84 +300,58 @@ function ActiveTimer({ routine, elapsed, stepElapsed, currentStep, CIRCUM, dashO
   CIRCUM: number; dashOffset: number; RADIUS: number; stepProgress: number;
   isRunning: boolean; voiceEnabled: boolean; isSupported: boolean;
   onPause:()=>void; onResume:()=>void; onStop:()=>void; onToggleVoice:()=>void; }) {
-
   const bp = currentStep?.breathPhase;
-
   return (
     <div className="flex-1 flex flex-col items-center justify-between px-4 pb-8">
-      {/* Ring */}
       <div className="relative flex items-center justify-center mt-6">
         {bp && isRunning && <>
-          <div className="absolute rounded-full opacity-20"
-            style={{ width:RADIUS*2+60, height:RADIUS*2+60, background:routine.color,
-              animation:`${bp==="inhale"?"breatheExpand":"breatheContract"} ${bp==="exhale"?"6s":"4s"} ease-in-out infinite` }}/>
-          <div className="absolute rounded-full opacity-10"
-            style={{ width:RADIUS*2+30, height:RADIUS*2+30, background:routine.color,
-              animation:`${bp==="inhale"?"breatheExpand":"breatheContract"} ${bp==="exhale"?"6s":"4s"} ease-in-out 0.5s infinite` }}/>
+          <div className="absolute rounded-full opacity-20" style={{ width:RADIUS*2+60, height:RADIUS*2+60, background:routine.color,
+            animation:`${bp==="inhale"?"breatheExpand":"breatheContract"} ${bp==="exhale"?"6s":"4s"} ease-in-out infinite` }}/>
+          <div className="absolute rounded-full opacity-10" style={{ width:RADIUS*2+30, height:RADIUS*2+30, background:routine.color,
+            animation:`${bp==="inhale"?"breatheExpand":"breatheContract"} ${bp==="exhale"?"6s":"4s"} ease-in-out .5s infinite` }}/>
         </>}
         <svg width={RADIUS*2+24} height={RADIUS*2+24} viewBox={`0 0 ${RADIUS*2+24} ${RADIUS*2+24}`}>
           <circle cx={RADIUS+12} cy={RADIUS+12} r={RADIUS} fill="none" stroke="#E0D8CC" strokeWidth={3}/>
           <circle cx={RADIUS+12} cy={RADIUS+12} r={RADIUS} fill="none" stroke={routine.color}
             strokeWidth={3} strokeLinecap="round" strokeDasharray={CIRCUM} strokeDashoffset={dashOffset}
-            style={{ transform:`rotate(-90deg)`, transformOrigin:`${RADIUS+12}px ${RADIUS+12}px`,
-              transition:"stroke-dashoffset 1s linear" }}/>
+            style={{ transform:`rotate(-90deg)`, transformOrigin:`${RADIUS+12}px ${RADIUS+12}px`, transition:"stroke-dashoffset 1s linear" }}/>
         </svg>
         <div className="absolute flex flex-col items-center">
           <span className="font-display text-5xl text-pratica-text">{formatDuration(elapsed)}</span>
-          {currentStep && (
-            <span className="text-sm text-pratica-muted mt-1 text-center max-w-[130px] leading-tight">
-              {currentStep.name}
-            </span>
-          )}
+          {currentStep && <span className="text-sm text-pratica-muted mt-1 text-center max-w-[130px] leading-tight">{currentStep.name}</span>}
           {bp === "inhale" && isRunning && <span className="text-xs text-pratica-green-dark mt-1 animate-pulse">Inspira ↑</span>}
           {bp === "exhale" && isRunning && <span className="text-xs text-pratica-blue mt-1 animate-pulse">Esala ↓</span>}
-          {bp === "hold" && isRunning && <span className="text-xs text-pratica-muted mt-1 animate-pulse">Trattieni ·</span>}
+          {bp === "hold"   && isRunning && <span className="text-xs text-pratica-muted mt-1 animate-pulse">Trattieni ·</span>}
         </div>
       </div>
 
-      {/* Step card */}
       {currentStep && (
         <div className="w-full pratica-card p-5 my-3">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <p className="text-xs text-pratica-muted uppercase tracking-widest">{currentStep.name}</p>
-              {voiceEnabled && isSupported && (
-                <span className="text-[10px] text-pratica-green-dark opacity-70">🎙</span>
-              )}
+              {voiceEnabled && isSupported && <span className="text-[10px] text-pratica-green-dark opacity-60">🎙</span>}
             </div>
             <p className="text-xs text-pratica-muted">{formatDuration(currentStep.duration - stepElapsed)}</p>
           </div>
           <p className="text-sm text-pratica-text font-light leading-relaxed">{currentStep.instruction}</p>
           <div className="mt-3 h-1 bg-pratica-border rounded-full overflow-hidden">
-            <div className="h-full rounded-full transition-all duration-1000"
-              style={{ width:`${stepProgress*100}%`, background:routine.color }}/>
+            <div className="h-full rounded-full transition-all duration-1000" style={{ width:`${stepProgress*100}%`, background:routine.color }}/>
           </div>
         </div>
       )}
 
-      {/* Controls */}
       <div className="flex items-center gap-5">
-        <button onClick={onStop}
-          className="w-12 h-12 rounded-full bg-pratica-warm flex items-center justify-center text-pratica-muted">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <rect x="3" y="3" width="18" height="18" rx="2"/>
-          </svg>
+        <button onClick={onStop} className="w-12 h-12 rounded-full bg-pratica-warm flex items-center justify-center text-pratica-muted">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
         </button>
-
         <button onClick={isRunning ? onPause : onResume}
-          className="flex items-center justify-center text-white shadow-green active:scale-95 transition-transform"
-          style={{ width:72, height:72, borderRadius:"50%",
-            background:`linear-gradient(135deg,${routine.color} 0%,${routine.color}bb 100%)` }}>
+          className="flex items-center justify-center text-white active:scale-95 transition-transform"
+          style={{ width:72, height:72, borderRadius:"50%", background:`linear-gradient(135deg,${routine.color} 0%,${routine.color}bb 100%)` }}>
           {isRunning
-            ? <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="6" y="4" width="4" height="16" rx="1"/>
-                <rect x="14" y="4" width="4" height="16" rx="1"/>
-              </svg>
-            : <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-                <polygon points="5,3 19,12 5,21"/>
-              </svg>}
+            ? <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+            : <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>}
         </button>
-
         {isSupported
           ? <button onClick={onToggleVoice}
               className={cn("w-12 h-12 rounded-full flex items-center justify-center text-xl transition-all",
@@ -398,30 +364,22 @@ function ActiveTimer({ routine, elapsed, stepElapsed, currentStep, CIRCUM, dashO
   );
 }
 
-// ── Completion ────────────────────────────────────────────────────────────────
-function CompletionScreen({ routine, duration, onReset }:
-  { routine: Routine; duration: number; onReset: () => void }) {
+function CompletionScreen({ routine, duration, onReset }: { routine: Routine; duration: number; onReset: () => void }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 pb-16 text-center animate-scale-in">
-      <div className="w-24 h-24 rounded-full flex items-center justify-center mb-6 animate-float"
-        style={{ background:`${routine.color}22` }}>
+      <div className="w-24 h-24 rounded-full flex items-center justify-center mb-6 animate-float" style={{ background:`${routine.color}22` }}>
         <span className="text-5xl">{routine.icon}</span>
       </div>
       <h2 className="font-display text-3xl text-pratica-text mb-2">Ottimo lavoro</h2>
       <p className="text-pratica-muted font-light mb-1">{routine.name} completata</p>
       <p className="text-sm text-pratica-muted mb-8">{formatDuration(duration)} di pratica</p>
       <div className="w-full space-y-3">
-        <Link href="/diary"
-          className="block w-full py-4 rounded-2xl text-white font-medium text-center"
+        <Link href="/diary" className="block w-full py-4 rounded-2xl text-white font-medium text-center"
           style={{ background:`linear-gradient(135deg,${routine.color} 0%,${routine.color}bb 100%)` }}>
           Registra umore
         </Link>
-        <button onClick={onReset} className="w-full py-3 rounded-2xl text-pratica-muted text-sm">
-          Nuova sessione
-        </button>
-        <Link href="/" className="block text-center text-sm text-pratica-muted py-2">
-          Torna alla home
-        </Link>
+        <button onClick={onReset} className="w-full py-3 rounded-2xl text-pratica-muted text-sm">Nuova sessione</button>
+        <Link href="/" className="block text-center text-sm text-pratica-muted py-2">Torna alla home</Link>
       </div>
     </div>
   );
@@ -429,11 +387,7 @@ function CompletionScreen({ routine, duration, onReset }:
 
 export default function TimerPage() {
   return (
-    <Suspense fallback={
-      <div className="min-h-dvh bg-pratica-bg flex items-center justify-center">
-        <div className="w-12 h-12 rounded-full bg-pratica-green-light animate-pulse"/>
-      </div>
-    }>
+    <Suspense fallback={<div className="min-h-dvh bg-pratica-bg flex items-center justify-center"><div className="w-12 h-12 rounded-full bg-pratica-green-light animate-pulse"/></div>}>
       <TimerContent />
     </Suspense>
   );

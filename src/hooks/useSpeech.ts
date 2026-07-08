@@ -20,7 +20,6 @@ export function useSpeech() {
   }, []);
 
   const getBestVoice = useCallback((voices: SpeechSynthesisVoice[]) => {
-    // iOS: Alice è la voce italiana più naturale e morbida
     const priority = [
       (v: SpeechSynthesisVoice) => v.name === "Alice" && v.lang.startsWith("it"),
       (v: SpeechSynthesisVoice) => v.name.toLowerCase().includes("alice"),
@@ -35,85 +34,67 @@ export function useSpeech() {
     return null;
   }, []);
 
-  // Trasforma il testo in parlato naturale: aggiunge pause, ammorbidisce la punteggiatura
-  const naturalize = (text: string): string => {
-    return text
-      .replace(/\./g, " .  ")          // pausa lunga dopo punto
-      .replace(/,/g, " , ")            // pausa breve dopo virgola
-      .replace(/:/g, " ,  ")           // pausa dopo due punti
-      .replace(/—/g, "  ,  ")          // pausa dopo trattino lungo
-      .replace(/\n/g, "  .  ")         // pausa dopo a capo
-      .replace(/\((\d+)s\)/g, "")      // rimuove "(4s)" ecc.
-      .replace(/×\d+/g, "")            // rimuove "×5"
-      .replace(/\s{3,}/g, "  ")        // normalizza spazi multipli
+  // Aggiunge pause naturali tra frasi
+  const naturalize = (text: string): string =>
+    text
+      .replace(/\.\s*/g, ". ")
+      .replace(/,\s*/g, ", ")
+      .replace(/:\s*/g, ": ")
+      .replace(/—/g, ", ")
+      .replace(/\n/g, ". ")
+      .replace(/\(\d+s\)/g, "")  // rimuove "(4s)"
+      .replace(/x\d+/gi, "")     // rimuove "x5"
       .trim();
-  };
 
-  // Parla un testo con i parametri più gentili
-  const speak = useCallback((text: string, options?: {
-    rate?: number;
-    pitch?: number;
-    volume?: number;
-  }) => {
+  // Voce principale — una sola utterance (più affidabile su iOS)
+  const speakFull = useCallback((text: string) => {
     const synth = synthRef.current;
     if (!synth) return;
     synth.cancel();
 
     const u = new SpeechSynthesisUtterance(naturalize(text));
     u.lang   = "it-IT";
-    u.rate   = options?.rate   ?? 0.75;  // lenta, calma
-    u.pitch  = options?.pitch  ?? 0.90;  // voce calda, non acuta
-    u.volume = options?.volume ?? 0.92;
-
+    u.rate   = 0.72;
+    u.pitch  = 0.90;
+    u.volume = 0.92;
     const v = getBestVoice(voices);
     if (v) u.voice = v;
     synth.speak(u);
   }, [voices, getBestVoice]);
 
-  // Parla un cue di respiro — ancora più lenta e soffusa
+  // Voce leggera per messaggi brevi
+  const speak = useCallback((text: string, options?: { rate?: number; pitch?: number }) => {
+    const synth = synthRef.current;
+    if (!synth) return;
+    synth.cancel();
+
+    const u = new SpeechSynthesisUtterance(naturalize(text));
+    u.lang   = "it-IT";
+    u.rate   = options?.rate  ?? 0.75;
+    u.pitch  = options?.pitch ?? 0.90;
+    u.volume = 0.90;
+    const v = getBestVoice(voices);
+    if (v) u.voice = v;
+    synth.speak(u);
+  }, [voices, getBestVoice]);
+
+  // Cue di respiro — NON cancella se sta già parlando
   const speakBreath = useCallback((text: string) => {
     const synth = synthRef.current;
     if (!synth) return;
-    synth.cancel();
+    if (synth.speaking) return; // non interrompere istruzioni in corso
 
     const u = new SpeechSynthesisUtterance(text);
     u.lang   = "it-IT";
-    u.rate   = 0.58;   // molto lenta
-    u.pitch  = 0.82;   // profonda e calma
-    u.volume = 0.80;   // soffusa
-
+    u.rate   = 0.58;
+    u.pitch  = 0.82;
+    u.volume = 0.78;
     const v = getBestVoice(voices);
     if (v) u.voice = v;
     synth.speak(u);
   }, [voices, getBestVoice]);
 
-  // Parla testo lungo spezzandolo in frasi — più naturale per istruzioni lunghe
-  const speakFull = useCallback((text: string) => {
-    const synth = synthRef.current;
-    if (!synth) return;
-    synth.cancel();
+  const stop = useCallback(() => { synthRef.current?.cancel(); }, []);
 
-    // Spezza per punto o virgola, parla ogni frase in sequenza
-    const sentences = text
-      .split(/(?<=[.!?])\s+/)
-      .map(s => s.trim())
-      .filter(s => s.length > 0);
-
-    for (const sentence of sentences) {
-      const u = new SpeechSynthesisUtterance(naturalize(sentence));
-      u.lang   = "it-IT";
-      u.rate   = 0.72;
-      u.pitch  = 0.90;
-      u.volume = 0.92;
-      const v = getBestVoice(voices);
-      if (v) u.voice = v;
-      synth.speak(u);
-    }
-  }, [voices, getBestVoice]);
-
-  const stop = useCallback(() => {
-    synthRef.current?.cancel();
-  }, []);
-
-  return { speak, speakBreath, speakFull, stop, isSupported };
+  return { speak, speakFull, speakBreath, stop, isSupported };
 }
