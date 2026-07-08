@@ -21,7 +21,7 @@ const BREATH_CUES: Record<string, string[]> = {
 
 function TimerContent() {
   const searchParams = useSearchParams();
-  const { speak, speakFull, speakBreath, stop, isSupported } = useSpeech();
+  const { speak, speakFull, speakFullRef, speakBreath, stop, isSupported } = useSpeech();
 
   const [selectedRoutine, setSelectedRoutine] = useState<Routine | null>(null);
   const [timerState, setTimerState] = useState<TimerState>("idle");
@@ -56,7 +56,7 @@ function TimerContent() {
     lastSpokenStepRef.current = currentStepIdx;
 
     const t = setTimeout(() => {
-      speakFull(`${currentStep.name}. ${currentStep.instruction}`);
+      speakFullRef.current(`${currentStep.name}. ${currentStep.instruction}`);
     }, 600);
     return () => clearTimeout(t);
   // eslint-disable-next-line react-hooks/exhaustive-deps
