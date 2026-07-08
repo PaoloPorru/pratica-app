@@ -10,22 +10,20 @@ export function useSpeech() {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
     synthRef.current = window.speechSynthesis;
     setIsSupported(true);
-
-    const loadVoices = () => {
+    const load = () => {
       const v = window.speechSynthesis.getVoices();
       if (v.length > 0) setVoices(v);
     };
-    loadVoices();
-    window.speechSynthesis.onvoiceschanged = loadVoices;
+    load();
+    window.speechSynthesis.onvoiceschanged = load;
     return () => { window.speechSynthesis.onvoiceschanged = null; };
   }, []);
 
-  // Sceglie la voce più gentile disponibile
   const getBestVoice = useCallback((voices: SpeechSynthesisVoice[]) => {
-    // Priorità: Alice (iOS, femminile italiana), poi qualsiasi it-IT locale, poi it generico
+    // iOS: Alice è la voce italiana più naturale e morbida
     const priority = [
       (v: SpeechSynthesisVoice) => v.name === "Alice" && v.lang.startsWith("it"),
-      (v: SpeechSynthesisVoice) => v.name.includes("Alice"),
+      (v: SpeechSynthesisVoice) => v.name.toLowerCase().includes("alice"),
       (v: SpeechSynthesisVoice) => v.lang === "it-IT" && v.localService,
       (v: SpeechSynthesisVoice) => v.lang.startsWith("it") && v.localService,
       (v: SpeechSynthesisVoice) => v.lang.startsWith("it"),
@@ -37,40 +35,42 @@ export function useSpeech() {
     return null;
   }, []);
 
-  // Aggiunge pause naturali tra frasi per effetto meditativo
-  const addPauses = (text: string): string => {
+  // Trasforma il testo in parlato naturale: aggiunge pause, ammorbidisce la punteggiatura
+  const naturalize = (text: string): string => {
     return text
-      .replace(/\.\s+/g, ". ... ")     // pausa dopo punto
-      .replace(/,\s+/g, ", .. ")        // pausa dopo virgola
-      .replace(/—/g, " ... ")           // pausa dopo em-dash
-      .replace(/\n/g, " ... ");         // pausa dopo a capo
+      .replace(/\./g, " .  ")          // pausa lunga dopo punto
+      .replace(/,/g, " , ")            // pausa breve dopo virgola
+      .replace(/:/g, " ,  ")           // pausa dopo due punti
+      .replace(/—/g, "  ,  ")          // pausa dopo trattino lungo
+      .replace(/\n/g, "  .  ")         // pausa dopo a capo
+      .replace(/\((\d+)s\)/g, "")      // rimuove "(4s)" ecc.
+      .replace(/×\d+/g, "")            // rimuove "×5"
+      .replace(/\s{3,}/g, "  ")        // normalizza spazi multipli
+      .trim();
   };
 
+  // Parla un testo con i parametri più gentili
   const speak = useCallback((text: string, options?: {
     rate?: number;
     pitch?: number;
     volume?: number;
-    gentle?: boolean; // modalità extra-gentile per cue di respiro
   }) => {
     const synth = synthRef.current;
     if (!synth) return;
     synth.cancel();
 
-    const processedText = addPauses(text);
-    const u = new SpeechSynthesisUtterance(processedText);
-
+    const u = new SpeechSynthesisUtterance(naturalize(text));
     u.lang   = "it-IT";
-    u.rate   = options?.gentle ? 0.68 : (options?.rate ?? 0.78); // lenta, meditativa
-    u.pitch  = options?.gentle ? 0.88 : (options?.pitch ?? 0.92); // leggermente più bassa, calda
-    u.volume = options?.volume ?? 0.95;
+    u.rate   = options?.rate   ?? 0.75;  // lenta, calma
+    u.pitch  = options?.pitch  ?? 0.90;  // voce calda, non acuta
+    u.volume = options?.volume ?? 0.92;
 
-    const bestVoice = getBestVoice(voices);
-    if (bestVoice) u.voice = bestVoice;
-
+    const v = getBestVoice(voices);
+    if (v) u.voice = v;
     synth.speak(u);
   }, [voices, getBestVoice]);
 
-  // Versione per cue di respiro: singola parola, molto lenta e calma
+  // Parla un cue di respiro — ancora più lenta e soffusa
   const speakBreath = useCallback((text: string) => {
     const synth = synthRef.current;
     if (!synth) return;
@@ -78,19 +78,42 @@ export function useSpeech() {
 
     const u = new SpeechSynthesisUtterance(text);
     u.lang   = "it-IT";
-    u.rate   = 0.62;   // molto lenta
-    u.pitch  = 0.85;   // calda e profonda
-    u.volume = 0.85;   // leggermente più bassa
+    u.rate   = 0.58;   // molto lenta
+    u.pitch  = 0.82;   // profonda e calma
+    u.volume = 0.80;   // soffusa
 
-    const bestVoice = getBestVoice(voices);
-    if (bestVoice) u.voice = bestVoice;
-
+    const v = getBestVoice(voices);
+    if (v) u.voice = v;
     synth.speak(u);
+  }, [voices, getBestVoice]);
+
+  // Parla testo lungo spezzandolo in frasi — più naturale per istruzioni lunghe
+  const speakFull = useCallback((text: string) => {
+    const synth = synthRef.current;
+    if (!synth) return;
+    synth.cancel();
+
+    // Spezza per punto o virgola, parla ogni frase in sequenza
+    const sentences = text
+      .split(/(?<=[.!?])\s+/)
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+
+    for (const sentence of sentences) {
+      const u = new SpeechSynthesisUtterance(naturalize(sentence));
+      u.lang   = "it-IT";
+      u.rate   = 0.72;
+      u.pitch  = 0.90;
+      u.volume = 0.92;
+      const v = getBestVoice(voices);
+      if (v) u.voice = v;
+      synth.speak(u);
+    }
   }, [voices, getBestVoice]);
 
   const stop = useCallback(() => {
     synthRef.current?.cancel();
   }, []);
 
-  return { speak, speakBreath, stop, isSupported };
+  return { speak, speakBreath, speakFull, stop, isSupported };
 }
