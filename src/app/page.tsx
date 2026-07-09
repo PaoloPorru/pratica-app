@@ -196,43 +196,6 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* Widget sync button */}
-      <div className="animate-fade-up mt-4 px-0">
-        <button
-          onClick={() => {
-            const profile = getProfile();
-            const streakData = getStreak();
-            const todayEntry = getTodayDiaryEntry();
-            const todaySessions = getTodaySessions();
-            const diary = getDiary();
-            const energyVal = profile ? calculateEnergyLevel(profile, diary) : 3;
-
-            const payload = {
-              streak: streakData.currentStreak,
-              longestStreak: streakData.longestStreak,
-              totalMinutes: streakData.totalMinutes,
-              todayDone: todaySessions.filter((s: { completed: boolean }) => s.completed).length,
-              todayMood: todayEntry?.mood ?? null,
-              energy: energyVal,
-              routineName: recommendation?.routineType ?? "centratura",
-              routineIcon: recommendation ? (getRoutineById(recommendation.routineType)?.icon ?? "🌿") : "🌿",
-              coachMessage: recommendation?.message ?? "Inizia la tua pratica quotidiana.",
-            };
-
-            const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
-            window.location.href = `scriptable:///run?scriptName=PraticaWidget&data=${encoded}`;
-          }}
-          className="w-full py-3 rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-98"
-          style={{
-            background: "rgba(168,184,160,0.12)",
-            border: "1px solid rgba(168,184,160,0.35)",
-          }}
-        >
-          <span className="text-base">📲</span>
-          <span className="text-sm text-pratica-muted font-medium">Sincronizza Widget iOS</span>
-        </button>
-      </div>
-
       <BottomNav />
     </div>
   );
