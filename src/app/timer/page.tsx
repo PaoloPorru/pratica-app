@@ -21,7 +21,7 @@ const BREATH_CUES: Record<string, string[]> = {
 
 function TimerContent() {
   const searchParams = useSearchParams();
-  const { speak, speakFull, speakFullRef, speakBreath, stop, isSupported } = useSpeech();
+  const { speak, speakFull, speakFullRef, speakBreath, stop, unlockAudio, isSupported } = useSpeech();
 
   const [selectedRoutine, setSelectedRoutine] = useState<Routine | null>(null);
   const [timerState, setTimerState] = useState<TimerState>("idle");
@@ -130,6 +130,9 @@ function TimerContent() {
   // ── Controlli ───────────────────────────────────────────────────
   function start() {
     if (!selectedRoutine) return;
+
+    // Sblocca audio iOS (deve stare nel click handler)
+    unlockAudio();
 
     // Reset refs
     stepIdxRef.current     = 0;
