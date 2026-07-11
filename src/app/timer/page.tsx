@@ -18,49 +18,100 @@ const BREATH_CUES: Record<string, string[]> = {
   rest:   [],
 };
 
-// ── Speech diretto — nessun hook, nessuna closure stantia ────────
-function getItalianVoice(): SpeechSynthesisVoice | null {
-  if (typeof window === "undefined" || !window.speechSynthesis) return null;
-  const vs = window.speechSynthesis.getVoices();
-  return (
-    vs.find(v => v.name === "Alice" && v.lang.startsWith("it")) ??
-    vs.find(v => v.lang === "it-IT" && v.localService) ??
-    vs.find(v => v.lang.startsWith("it")) ??
-    null
-  );
-}
-
+// ── Pulizia testo ────────────────────────────────────────────────
 function cleanText(text: string): string {
   return text
     .replace(/\((\d+)s\)/g, (_, n) => `per ${n} secondi`)
     .replace(/[×x](\d+)/gi, (_, n) => `per ${n} volte`)
     .replace(/↑/g, "su").replace(/↓/g, "giù")
-    .replace(/—/g, ", ").replace(/\n+/g, ". ")
+    .replace(/—/g, ". ").replace(/\n+/g, ". ")
     .replace(/[\u{1F300}-\u{1FFFF}]/gu, "")
     .replace(/\s{2,}/g, " ").trim();
 }
 
-function sayText(text: string, rate = 0.85) {
-  if (typeof window === "undefined" || !window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(cleanText(text));
-  u.lang = "it-IT";
-  u.rate = rate;
-  u.pitch = 1.0;
-  u.volume = 1.0;
-  const v = getItalianVoice();
-  if (v) u.voice = v;
-  window.speechSynthesis.speak(u);
+// ── Split per frasi: pausa lunga dopo punto, breve dopo virgola ──
+function splitIntoSentences(text: string): Array<{ text: string; pauseAfter: number }> {
+  const cleaned = cleanText(text);
+  // Divide su punto e virgola come separatori di frase
+  const parts = cleaned.split(/(?<=[.!?])\s+/);
+  return parts
+    .map(p => p.trim())
+    .filter(p => p.length > 2)
+    .map((p, i, arr) => ({
+      text: p,
+      pauseAfter: i < arr.length - 1 ? 1200 : 0, // 1.2s tra frasi
+    }));
 }
 
+// ── Voce italiana migliore disponibile ───────────────────────────
+function getItalianVoice(): SpeechSynthesisVoice | null {
+  if (typeof window === "undefined" || !window.speechSynthesis) return null;
+  const vs = window.speechSynthesis.getVoices();
+  return (
+    vs.find(v => v.name === "Alice"    && v.lang.startsWith("it")) ??
+    vs.find(v => v.name === "Federica" && v.lang.startsWith("it")) ??
+    vs.find(v => v.lang === "it-IT"    && v.localService)          ??
+    vs.find(v => v.lang.startsWith("it") && v.localService)        ??
+    vs.find(v => v.lang.startsWith("it"))                          ??
+    null
+  );
+}
+
+// ── Stile Meditopia: frasi sequenziali con pausa tra l'una e l'altra
+function sayMeditopia(
+  text: string,
+  opts: { rate?: number; onDone?: () => void } = {}
+) {
+  if (typeof window === "undefined" || !window.speechSynthesis) return;
+  const { rate = 0.82, onDone } = opts;
+
+  window.speechSynthesis.cancel();
+
+  const sentences = splitIntoSentences(text);
+  if (sentences.length === 0) { onDone?.(); return; }
+
+  const voice = getItalianVoice();
+
+  function speakNext(idx: number) {
+    if (idx >= sentences.length) { onDone?.(); return; }
+
+    const { text: t, pauseAfter } = sentences[idx];
+    const u = new SpeechSynthesisUtterance(t);
+    u.lang   = "it-IT";
+    u.rate   = rate;
+    u.pitch  = 1.02;   // leggermente sopra il default — più caldo
+    u.volume = 0.92;
+    if (voice) u.voice = voice;
+
+    u.onend = () => {
+      if (pauseAfter > 0) {
+        // Pausa silenziosa tra frasi — effetto meditativo
+        setTimeout(() => speakNext(idx + 1), pauseAfter);
+      } else {
+        speakNext(idx + 1);
+      }
+    };
+
+    u.onerror = () => {
+      // Su iOS a volte l'utterance fallisce — ritenta dopo 200ms
+      setTimeout(() => speakNext(idx + 1), 200);
+    };
+
+    window.speechSynthesis.speak(u);
+  }
+
+  speakNext(0);
+}
+
+// ── Cue respiro: singola parola, lentissima, soffusa ─────────────
 function sayBreath(text: string) {
   if (typeof window === "undefined" || !window.speechSynthesis) return;
-  if (window.speechSynthesis.speaking) return; // non interrompere
+  if (window.speechSynthesis.speaking) return;
   const u = new SpeechSynthesisUtterance(text);
-  u.lang = "it-IT";
-  u.rate = 0.62;
-  u.pitch = 1.0;
-  u.volume = 0.80;
+  u.lang   = "it-IT";
+  u.rate   = 0.58;
+  u.pitch  = 1.0;
+  u.volume = 0.70;
   const v = getItalianVoice();
   if (v) u.voice = v;
   window.speechSynthesis.speak(u);
@@ -78,37 +129,40 @@ function TimerContent() {
   const searchParams = useSearchParams();
 
   const [selectedRoutine, setSelectedRoutine] = useState<Routine | null>(null);
-  const [timerState, setTimerState] = useState<TimerState>("idle");
-  const [elapsed, setElapsed] = useState(0);
-  const [currentStepIdx, setCurrentStepIdx] = useState(0);
-  const [stepElapsed, setStepElapsed] = useState(0);
-  const [voiceEnabled, setVoiceEnabled] = useState(true);
-  const [isSupported, setIsSupported] = useState(false);
+  const [timerState, setTimerState]           = useState<TimerState>("idle");
+  const [elapsed, setElapsed]                 = useState(0);
+  const [currentStepIdx, setCurrentStepIdx]   = useState(0);
+  const [stepElapsed, setStepElapsed]         = useState(0);
+  const [voiceEnabled, setVoiceEnabled]       = useState(true);
+  const [isSupported, setIsSupported]         = useState(false);
 
-  const intervalRef       = useRef<ReturnType<typeof setInterval> | null>(null);
-  const routineRef        = useRef<Routine | null>(null);
-  const stepIdxRef        = useRef(0);
-  const stepElapsedRef    = useRef(0);
-  const elapsedRef        = useRef(0);
-  const voiceEnabledRef   = useRef(true);
+  const intervalRef     = useRef<ReturnType<typeof setInterval> | null>(null);
+  const routineRef      = useRef<Routine | null>(null);
+  const stepIdxRef      = useRef(0);
+  const stepElapsedRef  = useRef(0);
+  const elapsedRef      = useRef(0);
+  const voiceEnabledRef = useRef(true);
   voiceEnabledRef.current = voiceEnabled;
 
   useEffect(() => {
-    setIsSupported(typeof window !== "undefined" && "speechSynthesis" in window);
-    // Pre-carica voci iOS
-    if (window.speechSynthesis) {
-      window.speechSynthesis.getVoices();
-      window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
-    }
-    return () => { if (window.speechSynthesis) window.speechSynthesis.onvoiceschanged = null; };
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    setIsSupported(true);
+    // Forza caricamento voci iOS (asincrono)
+    const load = () => window.speechSynthesis.getVoices();
+    load();
+    window.speechSynthesis.onvoiceschanged = load;
+    return () => { window.speechSynthesis.onvoiceschanged = null; };
   }, []);
 
   useEffect(() => {
     const param = searchParams.get("routine");
-    if (param) { const r = getRoutineById(param); if (r) { setSelectedRoutine(r); routineRef.current = r; } }
+    if (param) {
+      const r = getRoutineById(param);
+      if (r) { setSelectedRoutine(r); routineRef.current = r; }
+    }
   }, [searchParams]);
 
-  // ── Tick — tutto imperativo ──────────────────────────────────────
+  // ── Tick imperativo ──────────────────────────────────────────────
   const tick = useCallback(() => {
     const routine = routineRef.current;
     if (!routine) return;
@@ -120,7 +174,7 @@ function TimerContent() {
     const step = routine.steps[stepIdxRef.current];
     if (!step) return;
 
-    // Cue respiro ogni 10s (dopo i primi 15s dello step)
+    // Cue respiro
     if (voiceEnabledRef.current && step.breathPhase &&
         newStepElapsed % 10 === 0 && newStepElapsed >= 15) {
       const cues = BREATH_CUES[step.breathPhase] ?? [];
@@ -132,27 +186,24 @@ function TimerContent() {
       const nextIdx = stepIdxRef.current + 1;
 
       if (nextIdx < routine.steps.length) {
-        // ── Avanza step ─────────────────────────────────────────
-        stepIdxRef.current = nextIdx;
+        stepIdxRef.current    = nextIdx;
         stepElapsedRef.current = 0;
         setCurrentStepIdx(nextIdx);
         setStepElapsed(0);
 
-        // Parla il nuovo step — diretto, nessun hook
         if (voiceEnabledRef.current) {
           const nextStep = routine.steps[nextIdx];
           setTimeout(() => {
-            sayText(`${nextStep.name}. ${nextStep.instruction}`);
-          }, 600);
+            sayMeditopia(`${nextStep.name}. ${nextStep.instruction}`);
+          }, 700);
         }
       } else {
-        // ── Fine pratica ────────────────────────────────────────
         clearInterval(intervalRef.current!);
         setTimerState("done");
         if (voiceEnabledRef.current) {
-          setTimeout(() => sayText(
-            "Pratica completata. Ottimo lavoro. Prenditi un momento per sentirti.", 0.80
-          ), 600);
+          setTimeout(() => sayMeditopia(
+            "Pratica completata. Ottimo lavoro. Prenditi un momento per sentirti.", { rate: 0.78 }
+          ), 700);
         }
         saveSession({
           id: generateId(), date: format(new Date(), "yyyy-MM-dd"),
@@ -167,19 +218,26 @@ function TimerContent() {
     }
   }, []);
 
+  // ── Controlli ────────────────────────────────────────────────────
   function start() {
     if (!selectedRoutine) return;
-    stepIdxRef.current = 0;
+    stepIdxRef.current    = 0;
     stepElapsedRef.current = 0;
-    elapsedRef.current = 0;
+    elapsedRef.current    = 0;
     setTimerState("running");
     setElapsed(0); setStepElapsed(0); setCurrentStepIdx(0);
     intervalRef.current = setInterval(tick, 1000);
 
     if (voiceEnabled && isSupported) {
       const first = selectedRoutine.steps[0];
-      setTimeout(() => sayText(`Benvenuto. Inizia ${selectedRoutine.name}.`, 0.78), 400);
-      setTimeout(() => { if (first) sayText(`${first.name}. ${first.instruction}`); }, 3200);
+      sayMeditopia(`Benvenuto. Inizia ${selectedRoutine.name}.`, {
+        rate: 0.76,
+        onDone: () => {
+          setTimeout(() => {
+            if (first) sayMeditopia(`${first.name}. ${first.instruction}`);
+          }, 800);
+        },
+      });
     }
   }
 
@@ -188,7 +246,7 @@ function TimerContent() {
     setTimerState("paused");
     stopSpeech();
     if (voiceEnabled && isSupported)
-      setTimeout(() => sayText("In pausa.", 0.78), 300);
+      setTimeout(() => sayMeditopia("In pausa.", { rate: 0.76 }), 300);
   }
 
   function resume() {
@@ -196,7 +254,8 @@ function TimerContent() {
     intervalRef.current = setInterval(tick, 1000);
     if (voiceEnabled && isSupported) {
       const step = routineRef.current?.steps[stepIdxRef.current];
-      if (step) setTimeout(() => sayText(`Riprendiamo. ${step.name}. ${step.instruction}`), 400);
+      if (step) setTimeout(() =>
+        sayMeditopia(`Riprendiamo. ${step.name}. ${step.instruction}`), 400);
     }
   }
 
@@ -217,21 +276,23 @@ function TimerContent() {
     const next = !voiceEnabled;
     setVoiceEnabled(next);
     voiceEnabledRef.current = next;
-    if (!next) { stopSpeech(); }
-    else if (timerState === "running") {
+    if (!next) {
+      stopSpeech();
+    } else if (timerState === "running") {
       const step = routineRef.current?.steps[stepIdxRef.current];
-      if (step) setTimeout(() => sayText(`${step.name}. ${step.instruction}`), 300);
+      if (step) setTimeout(() =>
+        sayMeditopia(`${step.name}. ${step.instruction}`), 300);
     }
   }
 
   useEffect(() => () => { clearInterval(intervalRef.current!); stopSpeech(); }, []);
 
-  const currentStep = selectedRoutine?.steps[currentStepIdx] ?? null;
+  const currentStep   = selectedRoutine?.steps[currentStepIdx] ?? null;
   const totalDuration = selectedRoutine?.duration ?? 0;
-  const progressPct = totalDuration > 0 ? Math.min(elapsed / totalDuration, 1) : 0;
-  const stepProgress = currentStep ? Math.min(stepElapsed / currentStep.duration, 1) : 0;
-  const RADIUS = 90;
-  const CIRCUM = 2 * Math.PI * RADIUS;
+  const progressPct   = totalDuration > 0 ? Math.min(elapsed / totalDuration, 1) : 0;
+  const stepProgress  = currentStep ? Math.min(stepElapsed / currentStep.duration, 1) : 0;
+  const RADIUS  = 90;
+  const CIRCUM  = 2 * Math.PI * RADIUS;
   const dashOffset = CIRCUM * (1 - progressPct);
 
   if (timerState === "done") return (
@@ -250,15 +311,16 @@ function TimerContent() {
         <h1 className="font-display text-lg text-pratica-text">{selectedRoutine?.name ?? "Timer"}</h1>
         {isSupported && selectedRoutine
           ? <button onClick={toggleVoice}
-              className={cn("w-8 h-8 flex items-center justify-center rounded-full transition-all text-base",
+              className={cn("w-8 h-8 flex items-center justify-center rounded-full text-base transition-all",
                 voiceEnabled ? "bg-pratica-green-light" : "bg-pratica-warm")}>
               {voiceEnabled ? "🔊" : "🔇"}
             </button>
-          : <div className="w-8" />}
+          : <div className="w-8"/>}
       </div>
 
       {timerState === "idle" && !selectedRoutine && (
-        <RoutineSelector routines={getAllRoutines()} onSelect={r => { setSelectedRoutine(r); routineRef.current = r; }} />
+        <RoutineSelector routines={getAllRoutines()}
+          onSelect={r => { setSelectedRoutine(r); routineRef.current = r; }} />
       )}
       {selectedRoutine && timerState === "idle" && (
         <RoutinePreview routine={selectedRoutine} voiceEnabled={voiceEnabled}
@@ -267,8 +329,8 @@ function TimerContent() {
       {(timerState === "running" || timerState === "paused") && selectedRoutine && (
         <ActiveTimer
           routine={selectedRoutine} elapsed={elapsed} stepElapsed={stepElapsed}
-          currentStep={currentStep} CIRCUM={CIRCUM} dashOffset={dashOffset} RADIUS={RADIUS}
-          stepProgress={stepProgress} isRunning={timerState === "running"}
+          currentStep={currentStep} CIRCUM={CIRCUM} dashOffset={dashOffset}
+          RADIUS={RADIUS} stepProgress={stepProgress} isRunning={timerState === "running"}
           voiceEnabled={voiceEnabled} isSupported={isSupported}
           onPause={pause} onResume={resume} onStop={stopTimer} onToggleVoice={toggleVoice}
         />
@@ -278,7 +340,7 @@ function TimerContent() {
   );
 }
 
-// ── Sub-componenti ────────────────────────────────────────────────
+// ── Componenti UI ─────────────────────────────────────────────────
 
 function RoutineSelector({ routines, onSelect }: { routines: Routine[]; onSelect: (r: Routine) => void }) {
   return (
@@ -312,7 +374,7 @@ function RoutinePreview({ routine, voiceEnabled, isSupported, onToggleVoice, onS
     <div className="flex-1 flex flex-col px-4 pb-8 animate-fade-up overflow-y-auto no-scrollbar">
       <div className="rounded-3xl p-6 mb-5 relative overflow-hidden"
         style={{ background:`${routine.color}18`, border:`1px solid ${routine.color}44` }}>
-        <div className="absolute -right-6 -top-6 w-24 h-24 rounded-full opacity-20" style={{ background:routine.color }} />
+        <div className="absolute -right-6 -top-6 w-24 h-24 rounded-full opacity-20" style={{ background:routine.color }}/>
         <div className="text-5xl mb-3">{routine.icon}</div>
         <h2 className="font-display text-2xl text-pratica-text mb-1">{routine.name}</h2>
         <p className="text-sm text-pratica-muted font-light leading-relaxed">{routine.description}</p>
@@ -334,14 +396,14 @@ function RoutinePreview({ routine, voiceEnabled, isSupported, onToggleVoice, onS
                 {voiceEnabled ? "Guida vocale attiva" : "Guida vocale disattiva"}
               </p>
               <p className="text-xs text-pratica-muted">
-                {voiceEnabled ? "Legge ogni istruzione" : "Tocca per attivare"}
+                {voiceEnabled ? "Frasi separate con pause naturali" : "Tocca per attivare"}
               </p>
             </div>
           </div>
           <div className={cn("w-11 h-6 rounded-full flex items-center px-0.5 transition-all",
             voiceEnabled ? "bg-pratica-green" : "bg-pratica-border")}>
             <div className={cn("w-5 h-5 rounded-full bg-white shadow transition-all",
-              voiceEnabled ? "translate-x-5" : "translate-x-0")} />
+              voiceEnabled ? "translate-x-5" : "translate-x-0")}/>
           </div>
         </button>
       )}
@@ -382,8 +444,7 @@ function RoutinePreview({ routine, voiceEnabled, isSupported, onToggleVoice, onS
 }
 
 function ActiveTimer({ routine, elapsed, stepElapsed, currentStep, CIRCUM, dashOffset,
-  RADIUS, stepProgress, isRunning, voiceEnabled, isSupported,
-  onPause, onResume, onStop, onToggleVoice }:
+  RADIUS, stepProgress, isRunning, voiceEnabled, isSupported, onPause, onResume, onStop, onToggleVoice }:
 { routine: Routine; elapsed: number; stepElapsed: number; currentStep: RoutineStep | null;
   CIRCUM: number; dashOffset: number; RADIUS: number; stepProgress: number;
   isRunning: boolean; voiceEnabled: boolean; isSupported: boolean;
@@ -424,7 +485,8 @@ function ActiveTimer({ routine, elapsed, stepElapsed, currentStep, CIRCUM, dashO
           </div>
           <p className="text-sm text-pratica-text font-light leading-relaxed">{currentStep.instruction}</p>
           <div className="mt-3 h-1 bg-pratica-border rounded-full overflow-hidden">
-            <div className="h-full rounded-full transition-all duration-1000" style={{ width:`${stepProgress*100}%`, background:routine.color }}/>
+            <div className="h-full rounded-full transition-all duration-1000"
+              style={{ width:`${stepProgress*100}%`, background:routine.color }}/>
           </div>
         </div>
       )}
@@ -455,7 +517,8 @@ function ActiveTimer({ routine, elapsed, stepElapsed, currentStep, CIRCUM, dashO
 function CompletionScreen({ routine, duration, onReset }: { routine: Routine; duration: number; onReset: () => void }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 pb-16 text-center animate-scale-in">
-      <div className="w-24 h-24 rounded-full flex items-center justify-center mb-6 animate-float" style={{ background:`${routine.color}22` }}>
+      <div className="w-24 h-24 rounded-full flex items-center justify-center mb-6 animate-float"
+        style={{ background:`${routine.color}22` }}>
         <span className="text-5xl">{routine.icon}</span>
       </div>
       <h2 className="font-display text-3xl text-pratica-text mb-2">Ottimo lavoro</h2>
